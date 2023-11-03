@@ -1,0 +1,10 @@
+[package]
+edition = "2021"
+name = "winman"
+version = "0.0.1"
+
+[dependencies]
+lazy_static = { version = "1.4.0", features = [] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.51", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
