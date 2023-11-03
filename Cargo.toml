@@ -1,7 +1,11 @@
 [package]
 edition = "2021"
-name = "winable"
+name = "jrg_winutil"
 version = "0.0.1"
+
+[lib]
+name = "winutil"
+path = "src/lib.rs"
 
 [dependencies]
 lazy_static = { version = "1.4.0", features = [] }
