@@ -21,7 +21,7 @@ use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use callback::event::*;
+use eventify::event::*;
 
 use lazy_static::lazy_static;
 

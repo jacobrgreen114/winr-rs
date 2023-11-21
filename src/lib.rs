@@ -15,7 +15,7 @@
  */
 
 extern crate lazy_static;
-extern crate callback;
+extern crate eventify;
 
 #[cfg(target_os = "windows")]
 extern crate windows;
