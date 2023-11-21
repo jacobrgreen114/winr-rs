@@ -1,10 +1,10 @@
 [package]
 edition = "2021"
 name = "winr"
-version = "0.0.0-alpha.1"
+version = "0.0.0"
 description = "A windowing library."
 authors = ["Jacob R. Green"]
-repository = "github.com/jacobrgreen114/winr-rs"
+repository = "https://github.com/jacobrgreen114/winr-rs"
 license = "Apache-2.0"
 license-file = "LICENSE"
 readme = "README.md"
