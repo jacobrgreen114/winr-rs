@@ -1,0 +1,8 @@
+
+# Ignore hidden files
+.*
+!.gitignore
+
+# Ignore build artifacts
+Cargo.lock
+target/
