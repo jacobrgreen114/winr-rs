@@ -7,7 +7,7 @@ use winr::*;
 struct MyWindow;
 
 impl WindowCallbacks for MyWindow {
-    type Error = WingmanError;
+    type Error = WinrError;
 }
 
 #[derive(Default)]
@@ -17,7 +17,7 @@ struct MyApp {
 
 impl ApplicationCallbacks for MyApp {
     type Exit = ();
-    type Error = WingmanError;
+    type Error = WinrError;
 
     fn on_startup(
         this: &mut ApplicationRunning<Self>,
@@ -49,7 +49,7 @@ impl ApplicationCallbacks for MyApp {
     }
 }
 
-fn main() -> Result<(), WingmanError> {
+fn main() -> Result<(), WinrError> {
     application()
         .with_callbacks(MyApp::default())
         .build()?

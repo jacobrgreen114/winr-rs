@@ -4,7 +4,7 @@
 use crate::application::ApplicationCallbacks;
 use crate::input::PlatformVirtualKeyConstants;
 use crate::window::{Ptr, WindowCallbacks, WindowStyle};
-use crate::{Extent, Point, WingmanResult};
+use crate::{Extent, Point, WinrResult};
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -18,7 +18,7 @@ pub trait PlatformApplicationBuilder<C: ApplicationCallbacks>: Sized {
 
     fn with_callbacks<D: ApplicationCallbacks>(self, callbacks: D) -> ApplicationBuilder<D>;
 
-    fn build(self) -> WingmanResult<Self::Application>;
+    fn build(self) -> WinrResult<Self::Application>;
 }
 
 pub trait PlatformApplication<C: ApplicationCallbacks>: Sized {
@@ -28,10 +28,10 @@ pub trait PlatformApplication<C: ApplicationCallbacks>: Sized {
 }
 
 pub trait PlatformApplicationRunning<C: ApplicationCallbacks>: Sized {
-    fn shutdown(&mut self) -> WingmanResult<()>;
+    fn shutdown(&mut self) -> WinrResult<()>;
 
-    fn wait_for_events(&mut self) -> WingmanResult<()>;
-    fn wait_for_events_timeout(&mut self, duration: std::time::Duration) -> WingmanResult<bool>;
+    fn wait_for_events(&mut self) -> WinrResult<()>;
+    fn wait_for_events_timeout(&mut self, duration: std::time::Duration) -> WinrResult<bool>;
 
     fn callbacks(&self) -> &C;
 
@@ -51,7 +51,7 @@ pub trait PlatformWindowBuilder<C: WindowCallbacks>: Sized {
 
     fn with_style(self, style: WindowStyle) -> Self;
 
-    fn build(self) -> WingmanResult<Ptr<Self::Window>>;
+    fn build(self) -> WinrResult<Ptr<Self::Window>>;
 }
 
 pub trait PlatformWindow<C: WindowCallbacks>: Sized {
@@ -59,12 +59,12 @@ pub trait PlatformWindow<C: WindowCallbacks>: Sized {
 
     fn is_closed(&self) -> bool;
 
-    fn show(&mut self) -> WingmanResult<()>;
+    fn show(&mut self) -> WinrResult<()>;
 
-    fn set_title(&mut self, title: String) -> WingmanResult<()>;
+    fn set_title(&mut self, title: String) -> WinrResult<()>;
 
-    fn set_pos(&mut self, pos: Point) -> WingmanResult<()>;
-    fn set_size(&mut self, size: Extent) -> WingmanResult<()>;
+    fn set_pos(&mut self, pos: Point) -> WinrResult<()>;
+    fn set_size(&mut self, size: Extent) -> WinrResult<()>;
 
     fn callbacks(&self) -> &C;
 
@@ -82,7 +82,7 @@ pub trait PlatformDisplay: Sized {
 pub trait PlatformDisplays: Sized + Iterator<Item = Self::Display> {
     type Display: PlatformDisplay;
 
-    fn new() -> WingmanResult<Self>;
+    fn new() -> WinrResult<Self>;
 }
 
 // Api

@@ -25,7 +25,7 @@ impl<C: ApplicationCallbacks> PlatformApplicationBuilder<C> for Win32Application
         Win32ApplicationBuilder { callbacks }
     }
 
-    fn build(self) -> WingmanResult<Self::Application> {
+    fn build(self) -> WinrResult<Self::Application> {
         Ok(Self::Application {
             callbacks: self.callbacks,
         })
@@ -81,7 +81,7 @@ impl<C: ApplicationCallbacks> Win32ApplicationRunning<C> {
     }
 
     /// Returns `true` if an event is in queue, `false` if the wait timed out.
-    fn do_wait(&self, millis: u32) -> WingmanResult<bool> {
+    fn do_wait(&self, millis: u32) -> WinrResult<bool> {
         match unsafe { win32::MsgWaitForMultipleObjects(None, false, millis, win32::QS_ALLINPUT) } {
             win32::WAIT_FAILED => Err(win32::Error::from_thread().into()),
             win32::WAIT_TIMEOUT => Ok(false),
@@ -91,16 +91,16 @@ impl<C: ApplicationCallbacks> Win32ApplicationRunning<C> {
 }
 
 impl<C: ApplicationCallbacks> PlatformApplicationRunning<C> for Win32ApplicationRunning<C> {
-    fn shutdown(&mut self) -> WingmanResult<()> {
+    fn shutdown(&mut self) -> WinrResult<()> {
         unsafe { win32::PostQuitMessage(0) }
         Ok(())
     }
 
-    fn wait_for_events(&mut self) -> WingmanResult<()> {
+    fn wait_for_events(&mut self) -> WinrResult<()> {
         unsafe { win32::WaitMessage() }.map_err(Into::into)
     }
 
-    fn wait_for_events_timeout(&mut self, timeout: std::time::Duration) -> WingmanResult<bool> {
+    fn wait_for_events_timeout(&mut self, timeout: std::time::Duration) -> WinrResult<bool> {
         const MAX_WAIT_MS: u32 = u32::MAX - 1;
 
         let mut millis = timeout.as_millis();

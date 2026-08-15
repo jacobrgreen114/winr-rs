@@ -29,12 +29,12 @@ pub mod input;
 pub mod window;
 
 #[derive(Debug, thiserror::Error)]
-pub enum WingmanError {
+pub enum WinrError {
     #[error(transparent)]
     Platform(#[from] platform::Error),
 }
 
-pub type WingmanResult<T> = Result<T, WingmanError>;
+pub type WinrResult<T> = Result<T, WinrError>;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Point {

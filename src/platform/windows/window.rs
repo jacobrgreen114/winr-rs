@@ -58,7 +58,7 @@ impl<C: WindowCallbacks> PlatformWindowBuilder<C> for Win32WindowBuilder<C> {
         self
     }
 
-    fn build(self) -> WingmanResult<Ptr<Self::Window>> {
+    fn build(self) -> WinrResult<Ptr<Self::Window>> {
         let title = string_to_title(&self.title);
 
         let window = match &self.style {
@@ -134,7 +134,7 @@ pub struct Win32Window<C: WindowCallbacks> {
 }
 
 impl<C: WindowCallbacks> Win32Window<C> {
-    fn destroy(&mut self) -> WingmanResult<()> {
+    fn destroy(&mut self) -> WinrResult<()> {
         unsafe { win32::DestroyWindow(self.handle) }?;
         // Handle nullified in win_proc
         Ok(())
@@ -160,18 +160,18 @@ impl<C: WindowCallbacks> PlatformWindow<C> for Win32Window<C> {
         self.handle == Default::default()
     }
 
-    fn show(&mut self) -> WingmanResult<()> {
+    fn show(&mut self) -> WinrResult<()> {
         let _ = unsafe { win32::ShowWindow(self.handle, win32::SW_SHOW) };
         Ok(())
     }
 
-    fn set_title(&mut self, title: String) -> WingmanResult<()> {
+    fn set_title(&mut self, title: String) -> WinrResult<()> {
         let title = string_to_title(&title);
         unsafe { win32::SetWindowTextW(self.handle, win32::PCWSTR(title.as_ptr())) }
             .map_err(Into::into)
     }
 
-    fn set_pos(&mut self, pos: Point) -> WingmanResult<()> {
+    fn set_pos(&mut self, pos: Point) -> WinrResult<()> {
         unsafe {
             win32::SetWindowPos(
                 self.handle,
@@ -186,7 +186,7 @@ impl<C: WindowCallbacks> PlatformWindow<C> for Win32Window<C> {
         .map_err(Into::into)
     }
 
-    fn set_size(&mut self, size: Extent) -> WingmanResult<()> {
+    fn set_size(&mut self, size: Extent) -> WinrResult<()> {
         unsafe {
             win32::SetWindowPos(
                 self.handle,

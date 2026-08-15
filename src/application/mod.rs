@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Jacob Green
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::{WingmanError, WingmanResult};
+use crate::{WinrError, WinrResult};
 use std::ops::{Deref, DerefMut};
 
 use crate::platform::{
@@ -24,7 +24,7 @@ pub trait ApplicationCallbacks: Sized {
     /// Type returned from `Application::run` on error.
     ///
     /// Can simply be `WingmanError` if your application doesn't report any other errors.
-    type Error: std::error::Error + From<WingmanError>;
+    type Error: std::error::Error + From<WinrError>;
 
     /// Called directly before the main loop starts.
     ///
@@ -61,7 +61,7 @@ pub trait ApplicationCallbacks: Sized {
 
 impl ApplicationCallbacks for () {
     type Exit = ();
-    type Error = WingmanError;
+    type Error = WinrError;
 }
 
 pub struct ApplicationBuilder<C: ApplicationCallbacks = ()> {
@@ -89,7 +89,7 @@ impl<C: ApplicationCallbacks> ApplicationBuilder<C> {
         }
     }
 
-    pub fn build(self) -> WingmanResult<Application<C>> {
+    pub fn build(self) -> WinrResult<Application<C>> {
         Ok(Application {
             platform: self.platform.build()?,
         })
@@ -142,15 +142,15 @@ pub struct ApplicationRunning<C: ApplicationCallbacks> {
 }
 
 impl<C: ApplicationCallbacks> ApplicationRunning<C> {
-    pub fn shutdown(&mut self) -> WingmanResult<()> {
+    pub fn shutdown(&mut self) -> WinrResult<()> {
         self.platform.shutdown()
     }
 
-    pub fn wait_for_events(&mut self) -> WingmanResult<()> {
+    pub fn wait_for_events(&mut self) -> WinrResult<()> {
         self.platform.wait_for_events()
     }
 
-    pub fn wait_for_events_timeout(&mut self, timeout: std::time::Duration) -> WingmanResult<bool> {
+    pub fn wait_for_events_timeout(&mut self, timeout: std::time::Duration) -> WinrResult<bool> {
         self.platform.wait_for_events_timeout(timeout)
     }
 }

@@ -45,7 +45,7 @@ struct MonitorEnumData {
 impl PlatformDisplays for Win32Monitors {
     type Display = Win32Monitor;
 
-    fn new() -> WingmanResult<Self> {
+    fn new() -> WinrResult<Self> {
         let mut data = MonitorEnumData::default();
 
         unsafe {

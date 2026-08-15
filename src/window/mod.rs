@@ -280,7 +280,7 @@ pub trait WindowCallbacks: Sized {
 }
 
 impl WindowCallbacks for () {
-    type Error = WingmanError;
+    type Error = WinrError;
 }
 
 pub struct WindowBuilder<C: WindowCallbacks = ()> {
@@ -321,7 +321,7 @@ impl<C: WindowCallbacks> WindowBuilder<C> {
     pub fn build<E: From<C::Error>, A: ApplicationCallbacks<Error = E>>(
         self,
         app: &mut ApplicationRunning<A>,
-    ) -> WingmanResult<WindowPtr<C>> {
+    ) -> WinrResult<WindowPtr<C>> {
         Ok(unsafe { transmute(self.platform.build()?) })
     }
 }
@@ -351,19 +351,19 @@ impl<C: WindowCallbacks> Window<C> {
         self.platform.is_closed()
     }
 
-    pub fn show(&mut self) -> WingmanResult<()> {
+    pub fn show(&mut self) -> WinrResult<()> {
         self.platform.show()
     }
 
-    pub fn set_title(&mut self, title: impl Into<String>) -> WingmanResult<()> {
+    pub fn set_title(&mut self, title: impl Into<String>) -> WinrResult<()> {
         self.platform.set_title(title.into())
     }
 
-    pub fn set_pos(&mut self, pos: Point) -> WingmanResult<()> {
+    pub fn set_pos(&mut self, pos: Point) -> WinrResult<()> {
         self.platform.set_pos(pos)
     }
 
-    pub fn set_size(&mut self, size: Extent) -> WingmanResult<()> {
+    pub fn set_size(&mut self, size: Extent) -> WinrResult<()> {
         self.platform.set_size(size)
     }
 }

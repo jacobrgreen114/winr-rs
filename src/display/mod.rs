@@ -41,7 +41,7 @@ pub struct Displays {
 }
 
 /// Creates a `Displays` struct.
-pub fn displays() -> WingmanResult<Displays> {
+pub fn displays() -> WinrResult<Displays> {
     platform::Displays::new().map(|platform| Displays { platform })
 }
 
