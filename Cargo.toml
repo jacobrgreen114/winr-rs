@@ -13,3 +13,8 @@ thiserror = { version = "2.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-pc-windows-msvc"
+]
