@@ -1,696 +1,449 @@
 // Copyright (c) 2026 Jacob Green
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::input::*;
-use crate::platform::windows::*;
-use crate::platform::*;
-use crate::window::*;
-use crate::*;
+//! The only native window-procedure boundary. It never invokes application code.
+use super::win32::*;
+use crate::application::Event;
+use crate::input::{self, ButtonState, KeyState, MouseButton, Utf16Decoder};
+use crate::window::{WindowBuilder, WindowEvent, WindowId};
+use crate::{Extent, Point, WinrError, WinrResult};
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
+use std::sync::OnceLock;
 
-use std::mem::transmute;
-use std::ops::Deref;
-use std::ptr::NonNull;
-use std::sync::LazyLock;
-
-pub type Win32WindowHandle = win32::HWND;
-
-pub struct Win32WindowBuilder<C: WindowCallbacks> {
-    callbacks: C,
-    title: String,
-    style: WindowStyle,
+pub(crate) struct Shared {
+    pub events: RefCell<VecDeque<Event>>,
+    pub panicked: Cell<bool>,
 }
-
-fn string_to_title(title: &str) -> Vec<u16> {
-    let mut s: Vec<_> = title.encode_utf16().collect();
-    match s.last().copied() {
-        Some(0) => {}
-        _ => s.push(0),
-    }
-    s
-}
-
-impl<C: WindowCallbacks> PlatformWindowBuilder<C> for Win32WindowBuilder<C> {
-    type Window = Win32Window<C>;
-
-    fn new(callbacks: C) -> Self {
-        Win32WindowBuilder {
-            callbacks,
-            title: Default::default(),
-            style: Default::default(),
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            events: RefCell::new(VecDeque::with_capacity(64)),
+            panicked: Cell::new(false),
         }
     }
+}
 
-    fn with_callbacks<D: WindowCallbacks>(self, callbacks: D) -> Win32WindowBuilder<D> {
-        Win32WindowBuilder {
-            callbacks,
-            title: self.title,
-            style: self.style,
+pub(crate) struct NativeWindow {
+    pub id: WindowId,
+    hwnd: Cell<HWND>,
+    shared: Rc<Shared>,
+    ready: Cell<bool>,
+    destroying: Cell<bool>,
+    min: Option<(i32, i32)>,
+    max: Option<(i32, i32)>,
+    text: RefCell<Utf16Decoder>,
+}
+impl NativeWindow {
+    pub fn create(
+        id: WindowId,
+        shared: Rc<Shared>,
+        builder: WindowBuilder,
+    ) -> WinrResult<Rc<Self>> {
+        let title = title(&builder.title)?;
+        let min = builder.extent_min.map(Extent::checked_i32).transpose()?;
+        let max = builder.extent_max.map(Extent::checked_i32).transpose()?;
+        if let (Some(min), Some(max)) = (min, max)
+            && (min.0 > max.0 || min.1 > max.1)
+        {
+            return Err(WinrError::InvalidWindowOptions);
         }
-    }
-
-    fn with_title(mut self, title: String) -> Self {
-        self.title = title;
-        self
-    }
-
-    fn with_style(mut self, style: WindowStyle) -> Self {
-        self.style = style;
-        self
-    }
-
-    fn build(self) -> WinrResult<Ptr<Self::Window>> {
-        let title = string_to_title(&self.title);
-
-        let window = match &self.style {
-            WindowStyle::Windowed(windowed) => {
-                let (style, style_ex) = (windowed.into(), windowed.into());
-
-                let (x, y, w, h) = {
-                    let (x, y) = windowed
-                        .origin
-                        .map(|p| {
-                            let x = i32::try_from(p.x).unwrap();
-                            let y = i32::try_from(p.y).unwrap();
-                            (x, y)
-                        })
-                        .unwrap_or((win32::CW_USEDEFAULT, win32::CW_USEDEFAULT));
-
-                    let (w, h) = windowed
-                        .extent
-                        .map(|s| {
-                            let x = i32::try_from(s.width).unwrap();
-                            let y = i32::try_from(s.height).unwrap();
-                            (x, y)
-                        })
-                        .unwrap_or((win32::CW_USEDEFAULT, win32::CW_USEDEFAULT));
-
-                    (x, y, w, h)
-                };
-
-                let mut window = Ptr::new(Win32Window {
-                    handle: Default::default(),
-                    size_min: windowed.extent_min,
-                    size_max: windowed.extent_max,
-                    callbacks: self.callbacks,
-                });
-
-                let create_info = WindowCreateInfo {
-                    window: NonNull::<Win32Window<C>>::from_mut(window.as_mut()).cast(),
-                    proc: win_proc::<C>,
-                };
-
-                let _hwnd = unsafe {
-                    win32::CreateWindowExW(
-                        style_ex,
-                        win32::PCWSTR(get_window_class().as_ptr()),
-                        win32::PCWSTR(title.as_ptr()),
-                        style,
-                        x,
-                        y,
-                        w,
-                        h,
-                        None,
-                        None,
-                        None,
-                        Some(core::ptr::from_ref::<WindowCreateInfo>(&create_info).cast()),
-                    )
-                }?;
-
-                window
-            }
+        let (x, y) = builder
+            .origin
+            .map(position)
+            .transpose()?
+            .unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT));
+        let (width, height) = builder
+            .extent
+            .map(Extent::checked_i32)
+            .transpose()?
+            .unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT));
+        if builder.extent.is_some()
+            && (min.is_some_and(|m| width < m.0 || height < m.1)
+                || max.is_some_and(|m| width > m.0 || height > m.1))
+        {
+            return Err(WinrError::InvalidWindowOptions);
+        }
+        let mut style = WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        style |= if builder.decorated {
+            WS_CAPTION
+        } else {
+            WS_POPUP
         };
-
-        debug_assert_ne!(window.handle, Default::default());
-
-        Ok(window)
+        if builder.resizable {
+            style |= WS_THICKFRAME | WS_MAXIMIZEBOX;
+        }
+        let instance = instance()?;
+        register_class(instance)?;
+        let state = Rc::new(Self {
+            id,
+            hwnd: Cell::new(HWND::default()),
+            shared,
+            ready: Cell::new(false),
+            destroying: Cell::new(false),
+            min,
+            max,
+            text: RefCell::new(Utf16Decoder::default()),
+        });
+        // SAFETY: state remains alive throughout creation. WM_NCCREATE establishes
+        // an additional Rc owner for userdata, released only at WM_NCDESTROY.
+        let result = unsafe {
+            CreateWindowExW(
+                WS_EX_APPWINDOW,
+                w!("winr.event-window.v1"),
+                PCWSTR(title.as_ptr()),
+                style,
+                x,
+                y,
+                width,
+                height,
+                None,
+                None,
+                Some(instance),
+                Some(Rc::as_ptr(&state).cast()),
+            )
+        };
+        if state.shared.panicked.get() {
+            let _ = state.close();
+            return Err(WinrError::NativeProcedurePanicked);
+        }
+        result?;
+        state.ready.set(true);
+        state.emit(WindowEvent::Created);
+        Ok(state)
     }
-}
-
-pub struct Win32Window<C: WindowCallbacks> {
-    handle: win32::HWND,
-    size_min: Option<Extent>,
-    size_max: Option<Extent>,
-    callbacks: C,
-}
-
-impl<C: WindowCallbacks> Win32Window<C> {
-    fn destroy(&mut self) -> WinrResult<()> {
-        unsafe { win32::DestroyWindow(self.handle) }?;
-        // Handle nullified in win_proc
-        Ok(())
-    }
-}
-
-impl<C: WindowCallbacks> Drop for Win32Window<C> {
-    fn drop(&mut self) {
-        if self.handle != Default::default() {
-            let window = unsafe { transmute(&self) };
-            C::on_closing(window, &EventClosing {});
-            self.destroy().unwrap();
+    pub fn handle(&self) -> WinrResult<HWND> {
+        let hwnd = self.hwnd.get();
+        if hwnd.is_invalid() || self.destroying.get() {
+            Err(WinrError::WindowClosed)
+        } else {
+            Ok(hwnd)
         }
     }
-}
-
-impl<C: WindowCallbacks> PlatformWindow<C> for Win32Window<C> {
-    fn handle(&self) -> platform::WindowHandle {
-        self.handle
+    pub fn is_closed(&self) -> bool {
+        self.hwnd.get().is_invalid()
     }
-
-    fn is_closed(&self) -> bool {
-        self.handle == Default::default()
+    pub fn close(&self) -> WinrResult<()> {
+        if self.is_closed() || self.destroying.replace(true) {
+            return Ok(());
+        }
+        // SAFETY: HWND belongs to this thread. Only Cell accesses span this call;
+        // no exclusive reference or RefCell borrow survives synchronous messages.
+        let result = unsafe { DestroyWindow(self.hwnd.get()) };
+        if result.is_err() {
+            self.destroying.set(false);
+        }
+        result.map_err(Into::into)
     }
-
-    fn show(&mut self) -> WinrResult<()> {
-        let _ = unsafe { win32::ShowWindow(self.handle, win32::SW_SHOW) };
+    pub fn show(&self) -> WinrResult<()> {
+        unsafe {
+            let _ = ShowWindow(self.handle()?, SW_SHOW);
+        }
         Ok(())
     }
-
-    fn set_title(&mut self, title: String) -> WinrResult<()> {
-        let title = string_to_title(&title);
-        unsafe { win32::SetWindowTextW(self.handle, win32::PCWSTR(title.as_ptr())) }
+    pub fn set_title(&self, value: &str) -> WinrResult<()> {
+        let title = title(value)?;
+        unsafe { SetWindowTextW(self.handle()?, PCWSTR(title.as_ptr())) }.map_err(Into::into)
+    }
+    pub fn set_pos(&self, value: Point) -> WinrResult<()> {
+        let (x, y) = position(value)?;
+        unsafe {
+            SetWindowPos(
+                self.handle()?,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(Into::into)
+    }
+    pub fn set_size(&self, value: Extent) -> WinrResult<()> {
+        let (w, h) = value.checked_i32()?;
+        if self.min.is_some_and(|m| w < m.0 || h < m.1)
+            || self.max.is_some_and(|m| w > m.0 || h > m.1)
+        {
+            return Err(WinrError::InvalidWindowOptions);
+        }
+        unsafe {
+            SetWindowPos(
+                self.handle()?,
+                None,
+                0,
+                0,
+                w,
+                h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(Into::into)
+    }
+    pub fn request_redraw(&self) -> WinrResult<()> {
+        unsafe { InvalidateRect(Some(self.handle()?), None, false) }
+            .ok()
             .map_err(Into::into)
     }
-
-    fn set_pos(&mut self, pos: Point) -> WinrResult<()> {
-        unsafe {
-            win32::SetWindowPos(
-                self.handle,
-                None,
-                pos.x.try_into().unwrap(),
-                pos.y.try_into().unwrap(),
-                0,
-                0,
-                win32::SWP_NOSIZE | win32::SWP_NOZORDER,
-            )
+    fn emit(&self, event: WindowEvent) {
+        if self.ready.get() {
+            self.shared
+                .events
+                .borrow_mut()
+                .push_back(Event::Window { id: self.id, event });
         }
-        .map_err(Into::into)
-    }
-
-    fn set_size(&mut self, size: Extent) -> WinrResult<()> {
-        unsafe {
-            win32::SetWindowPos(
-                self.handle,
-                None,
-                0,
-                0,
-                size.width.try_into().unwrap(),
-                size.height.try_into().unwrap(),
-                win32::SWP_NOMOVE | win32::SWP_NOZORDER,
-            )
-        }
-        .map_err(Into::into)
-    }
-
-    fn callbacks(&self) -> &C {
-        &self.callbacks
-    }
-
-    fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
     }
 }
-
-//
-//  Window Class
-//
-
-fn get_window_class() -> &'static [u16] {
-    static WINDOW_CLASS: LazyLock<(u16, &'static [u16])> = LazyLock::new(|| unsafe {
-        static CLASS_NAME: &[u16] = &['w' as u16, 'i' as u16, 'n' as u16, 'r' as u16, 0];
-        let class = win32::WNDCLASSEXW {
-            cbSize: size_of::<win32::WNDCLASSEXW>() as u32,
-            style: win32::CS_HREDRAW | win32::CS_VREDRAW,
-            lpfnWndProc: Some(win_proc_initial),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: win32::HINSTANCE::default(),
-            hIcon: win32::HICON::default(),
-            hCursor: win32::LoadCursorW(None, win32::IDC_ARROW).unwrap(),
-            hbrBackground: win32::HBRUSH::default(),
-            lpszMenuName: win32::PCWSTR::null(),
-            lpszClassName: win32::PCWSTR(CLASS_NAME.as_ptr()),
-            hIconSm: win32::HICON::default(),
-        };
-        (win32::RegisterClassExW(&class), CLASS_NAME)
-    });
-
-    WINDOW_CLASS.1
+fn title(value: &str) -> WinrResult<Vec<u16>> {
+    if value.contains('\0') {
+        return Err(WinrError::InvalidWindowOptions);
+    }
+    Ok(value.encode_utf16().chain(Some(0)).collect())
 }
-
-//
-//  Win32 Window Procedure
-//
-
-macro_rules! loword {
-    ($value:expr) => {
-        (($value) as u16)
-    };
+fn position(value: Point) -> WinrResult<(i32, i32)> {
+    Ok((
+        value
+            .x
+            .try_into()
+            .map_err(|_| WinrError::InvalidWindowOptions)?,
+        value
+            .y
+            .try_into()
+            .map_err(|_| WinrError::InvalidWindowOptions)?,
+    ))
 }
-
-macro_rules! hiword {
-    ($value:expr) => {
-        (($value >> 16) as u16)
-    };
+fn instance() -> windows::core::Result<HINSTANCE> {
+    // SAFETY: None requests the current process module, which remains loaded.
+    unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
+        .map(|module| HINSTANCE(module.0))
 }
-
-struct WindowCreateInfo {
-    window: NonNull<core::ffi::c_void>,
-    proc: unsafe extern "system" fn(
-        param0: win32::HWND,
-        param1: u32,
-        param2: win32::WPARAM,
-        param3: win32::LPARAM,
-    ) -> win32::LRESULT,
-}
-
-// Initial 'Any' win_proc before switching to the generic specialized version
-pub unsafe extern "system" fn win_proc_initial(
-    hwnd: win32::HWND,
-    msg: u32,
-    wparam: win32::WPARAM,
-    lparam: win32::LPARAM,
-) -> win32::LRESULT {
-    unsafe {
-        match msg {
-            win32::WM_GETMINMAXINFO => win32::DefWindowProcW(hwnd, msg, wparam, lparam),
-            win32::WM_NCCREATE => {
-                let create = (lparam.0 as *const win32::CREATESTRUCTW).as_ref().unwrap();
-                let create_info = create
-                    .lpCreateParams
-                    .cast::<WindowCreateInfo>()
-                    .as_ref()
-                    .unwrap();
-                win32::SetWindowLongPtrW(
-                    hwnd,
-                    win32::GWLP_USERDATA,
-                    create_info.window.as_ptr() as isize,
-                );
-                win32::SetWindowLongPtrW(hwnd, win32::GWLP_WNDPROC, create_info.proc as isize);
-
-                win32::DefWindowProcW(hwnd, msg, wparam, lparam)
+fn register_class(instance: HINSTANCE) -> windows::core::Result<()> {
+    static CLASS: OnceLock<windows::core::Result<()>> = OnceLock::new();
+    CLASS
+        .get_or_init(|| {
+            let class = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
+                lpszClassName: w!("winr.event-window.v1"),
+                ..Default::default()
+            };
+            if unsafe { RegisterClassExW(&class) } == 0 {
+                Err(Error::from_thread())
+            } else {
+                Ok(())
             }
-            _ => panic!("Unexpected window message!"),
+        })
+        .clone()
+}
+
+/// SAFETY: called by Windows on the creating thread with message-specific pointers.
+/// userdata holds an Rc strong reference from NCCREATE until NCDESTROY. Each invocation
+/// takes its own Rc so nested destruction cannot invalidate the current procedure.
+unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_NCCREATE {
+        // SAFETY: WM_NCCREATE supplies a valid CREATESTRUCTW for this call.
+        let create = unsafe { &*(lp.0 as *const CREATESTRUCTW) };
+        let ptr = create.lpCreateParams.cast::<NativeWindow>();
+        if ptr.is_null() {
+            return LRESULT(0);
+        }
+        // SAFETY: create() owns an Rc for this pointer throughout CreateWindowExW.
+        unsafe {
+            Rc::increment_strong_count(ptr);
+            SetLastError(ERROR_SUCCESS);
+        }
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+        }
+        if unsafe { GetLastError() } != ERROR_SUCCESS {
+            unsafe {
+                drop(Rc::from_raw(ptr));
+            }
+            return LRESULT(0);
+        }
+        unsafe { &*ptr }.hwnd.set(hwnd);
+        return LRESULT(1);
+    }
+    let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const NativeWindow;
+    if ptr.is_null() {
+        return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+    }
+    unsafe {
+        Rc::increment_strong_count(ptr);
+    }
+    let state = unsafe { Rc::from_raw(ptr) };
+    if msg == WM_NCDESTROY {
+        // Detach before default processing; nested calls now take the default path.
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+        state.hwnd.set(HWND::default());
+        unsafe {
+            drop(Rc::from_raw(ptr));
+        } // release userdata's owner exactly once
+    }
+    // No application code runs here. Contain internal unwinding failures and surface
+    // them from the event loop after native dispatch (panic=abort cannot be caught).
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        dispatch(&state, hwnd, msg, wp, lp)
+    })) {
+        Ok(result) => result,
+        Err(_) => {
+            state.shared.panicked.set(true);
+            LRESULT(0)
         }
     }
 }
 
-unsafe fn lparam_to_point(lparam: win32::LPARAM) -> Point {
-    Point {
-        x: loword!(lparam.0).try_into().unwrap(),
-        y: hiword!(lparam.0).try_into().unwrap(),
-    }
-}
-
-unsafe fn lparam_to_size(lparam: win32::LPARAM) -> Extent {
-    Extent {
-        width: loword!(lparam.0).try_into().unwrap(),
-        height: hiword!(lparam.0).try_into().unwrap(),
-    }
-}
-
-unsafe fn wparam_to_xbutton(wparam: win32::WPARAM) -> MouseButton {
-    match hiword!(wparam.0) {
-        win32::XBUTTON1 => MouseButton::Button4,
-        win32::XBUTTON2 => MouseButton::Button5,
-        _ => unreachable!(),
-    }
-}
-
-// fn wparam_to_mods(wparam: win32::WPARAM) -> KeyModifiers {
-//     let mut mods = KeyModifiers::default();
-//     if (wparam.0 | win32::MK_SHIFT.0 as usize) != 0 {
-//         mods |= KeyModifiers::SHIFT
-//     }
-//     if (wparam.0 | win32::MK_CONTROL.0 as usize) != 0 {
-//         mods |= KeyModifiers::CONTROL
-//     }
-//     mods
-// }
-
-fn win32_key_event<C: WindowCallbacks>(
-    window: &mut crate::window::Window<C>,
-    wparam: win32::WPARAM,
-    lparam: win32::LPARAM,
-    state: KeyState,
-) -> win32::LRESULT {
-    let extended = (lparam.0 >> 24) & 1 != 0;
-    VirtualKey::try_from((wparam, extended))
-        .ok()
-        .inspect(|key| {
-            // let scan_code = hiword!(lparam.0) & 0xff;
-            let event = EventKey { key: *key, state };
-            C::on_key(window, &event);
-        });
-    win32::LRESULT::default()
-}
-
-fn win32_mouse_button_event<C: WindowCallbacks>(
-    window: &mut crate::window::Window<C>,
-    wparam: win32::WPARAM,
-    lparam: win32::LPARAM,
-    button: MouseButton,
-    state: ButtonState,
-) -> win32::LRESULT {
-    let event = EventMouseButton {
-        button,
-        state,
-        position: unsafe { lparam_to_point(lparam) },
-    };
-    C::on_mouse_button(window, &event);
-    win32::LRESULT::default()
-}
-
-pub unsafe extern "system" fn win_proc<C: WindowCallbacks>(
-    hwnd: win32::HWND,
-    msg: u32,
-    wparam: win32::WPARAM,
-    lparam: win32::LPARAM,
-) -> win32::LRESULT {
-    let window = unsafe { get_window::<C>(hwnd) }.unwrap();
-
+unsafe fn dispatch(state: &NativeWindow, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        // Drawing
-        win32::WM_PAINT => {
-            // Validate whole client area to stop the system from sending WM_PAINT messages
-            C::redraw_requested(window, &EventRedraw {});
-
-            // todo - make window implementation mark region as clean
-
-            win32::ValidateRect(Some(hwnd), None).expect("Failed to mark window as clean");
-
-            win32::LRESULT::default()
+        WM_NCDESTROY => {
+            state.emit(WindowEvent::Closed);
+            return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
         }
-
-        // Character Input
-        win32::WM_CHAR => {
-            let mut ch = char::from_u32(wparam.0 as u32).unwrap();
-            match ch {
-                '\r' => ch = '\n',
-                _ => {}
+        WM_CLOSE => state.emit(WindowEvent::CloseRequested),
+        WM_PAINT => {
+            // Validate before returning; rendering is deferred until application dispatch.
+            let mut paint = PAINTSTRUCT::default();
+            unsafe {
+                let _ = BeginPaint(hwnd, &mut paint);
+                let _ = EndPaint(hwnd, &paint);
             }
-
-            let event = EventChar { ch };
-
-            C::on_char(window, &event).unwrap();
-
-            win32::LRESULT::default()
+            state.emit(WindowEvent::RedrawRequested);
         }
-
-        win32::WM_UNICHAR => {
-            let ch = wparam.0 as u32;
-            if ch == win32::UNICODE_NOCHAR {
-                win32::LRESULT(1)
-            } else {
-                let ch = char::from_u32(ch).unwrap();
-                let event = EventChar { ch };
-
-                C::on_char(window, &event);
-
-                win32::LRESULT::default()
+        WM_GETMINMAXINFO => {
+            // Let Windows populate all defaults before applying cached outer constraints.
+            unsafe {
+                DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            let info = unsafe { &mut *(lp.0 as *mut MINMAXINFO) };
+            if let Some((x, y)) = state.min {
+                info.ptMinTrackSize = POINT { x, y };
+            }
+            if let Some((x, y)) = state.max {
+                info.ptMaxTrackSize = POINT { x, y };
             }
         }
-
-        // Key Pressed
-        win32::WM_KEYDOWN | win32::WM_SYSKEYDOWN => {
-            let prev_state = ((lparam.0 >> 30) & 1) != 0;
-            let state = if !prev_state {
-                KeyState::Press
-            } else {
+        WM_CHAR => {
+            let chars = state.text.borrow_mut().push(wp.0 as u16);
+            for ch in chars.into_iter().flatten() {
+                state.emit(WindowEvent::Character(ch));
+            }
+        }
+        WM_UNICHAR => {
+            if wp.0 as u32 == UNICODE_NOCHAR {
+                return LRESULT(1);
+            }
+            state.emit(WindowEvent::Character(
+                char::from_u32(wp.0 as u32).unwrap_or(char::REPLACEMENT_CHARACTER),
+            ));
+        }
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            let key = input::virtual_key(
+                wp.0 as u32,
+                ((lp.0 >> 16) & 0xff) as u8,
+                lp.0 & (1 << 24) != 0,
+            );
+            let key_state = if msg == WM_KEYUP || msg == WM_SYSKEYUP {
+                KeyState::Release
+            } else if lp.0 & (1 << 30) != 0 {
                 KeyState::Repeat
+            } else {
+                KeyState::Press
             };
-            win32_key_event::<C>(window, wparam, lparam, state)
+            state.emit(WindowEvent::Key {
+                key,
+                state: key_state,
+            });
+            // Preserve system behavior such as Alt+F4 and the system menu.
+            if msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP {
+                return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+            }
         }
-
-        // Key Released
-        win32::WM_KEYUP | win32::WM_SYSKEYUP => {
-            win32_key_event::<C>(window, wparam, lparam, KeyState::Release)
-        }
-
-        // Mouse Button
-        win32::WM_LBUTTONDOWN => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Left,
-            ButtonState::Press,
-        ),
-
-        win32::WM_LBUTTONUP => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Left,
-            ButtonState::Release,
-        ),
-
-        win32::WM_RBUTTONDOWN => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Right,
-            ButtonState::Press,
-        ),
-
-        win32::WM_RBUTTONUP => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Right,
-            ButtonState::Release,
-        ),
-
-        win32::WM_MBUTTONDOWN => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Middle,
-            ButtonState::Press,
-        ),
-
-        win32::WM_MBUTTONUP => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            MouseButton::Middle,
-            ButtonState::Release,
-        ),
-
-        win32::WM_XBUTTONDOWN => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            unsafe { wparam_to_xbutton(wparam) },
-            ButtonState::Press,
-        ),
-
-        win32::WM_XBUTTONUP => win32_mouse_button_event::<C>(
-            window,
-            wparam,
-            lparam,
-            unsafe { wparam_to_xbutton(wparam) },
-            ButtonState::Release,
-        ),
-
-        // Mouse Move
-        win32::WM_MOUSEMOVE => {
-            let event = EventMouseMove {
-                position: unsafe { lparam_to_point(lparam) },
-            };
-            C::on_mouse_move(window, &event);
-            win32::LRESULT::default()
-        }
-
-        // Mouse Wheel
-        win32::WM_MOUSEWHEEL => {
-            let delta = hiword!(wparam.0) as i16;
-            let event = EventMouseWheel {
-                delta_y: delta as i32,
-                delta_x: 0,
-                position: unsafe { lparam_to_point(lparam) },
-            };
-            C::on_mouse_wheel(window, &event);
-            win32::LRESULT::default()
-        }
-
-        win32::WM_MOUSEHWHEEL => {
-            let delta = hiword!(wparam.0) as i16;
-            let event = EventMouseWheel {
-                delta_x: delta as i32,
-                delta_y: 0,
-                position: unsafe { lparam_to_point(lparam) },
-            };
-            C::on_mouse_wheel(window, &event);
-            win32::LRESULT::default()
-        }
-
-        // Window Focused
-        win32::WM_SETFOCUS => {
-            C::on_focus(window, &EventFocused { is_focused: true });
-            win32::LRESULT::default()
-        }
-
-        // Window Lost Focus
-        win32::WM_KILLFOCUS => {
-            C::on_focus(window, &EventFocused { is_focused: false });
-            win32::LRESULT::default()
-        }
-
-        // Window Moved
-        win32::WM_MOVE => {
-            let event = EventMoved {
-                origin: unsafe { lparam_to_point(lparam) },
-            };
-            C::on_moved(window, &event);
-            win32::LRESULT::default()
-        }
-
-        // Window System Command
-        win32::WM_SYSCOMMAND => {
-            let command = wparam.0 as u32 & 0xfff0;
-            match command {
-                win32::SC_RESTORE => {
-                    C::on_visibility(
-                        window,
-                        &EventVisibility {
-                            visibility: Visibility::Normal,
-                        },
-                    );
+        WM_MOUSEMOVE => state.emit(WindowEvent::MouseMoved(input::signed_point(lp.0))),
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
+        | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            let button = match msg {
+                WM_LBUTTONDOWN | WM_LBUTTONUP => MouseButton::Left,
+                WM_RBUTTONDOWN | WM_RBUTTONUP => MouseButton::Right,
+                WM_MBUTTONDOWN | WM_MBUTTONUP => MouseButton::Middle,
+                _ => {
+                    if ((wp.0 >> 16) as u16) == XBUTTON1 {
+                        MouseButton::Button4
+                    } else {
+                        MouseButton::Button5
+                    }
                 }
-                win32::SC_MINIMIZE => {
-                    C::on_visibility(
-                        window,
-                        &EventVisibility {
-                            visibility: Visibility::Minimized,
-                        },
-                    );
-                }
-                win32::SC_MAXIMIZE => {
-                    C::on_visibility(
-                        window,
-                        &EventVisibility {
-                            visibility: Visibility::Maximized,
-                        },
-                    );
-                }
-
-                _ => {}
-            }
-            unsafe { win32::DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-
-        // Window Resized
-        win32::WM_SIZE => {
-            let event = EventResized {
-                extent: unsafe { lparam_to_size(lparam) },
             };
-            C::on_resized(window, &event);
-            win32::LRESULT::default()
-        }
-
-        win32::WM_GETMINMAXINFO => {
-            let info = unsafe { (lparam.0 as *mut win32::MINMAXINFO).as_mut() }.unwrap();
-            if let Some(min) = window.platform.size_min {
-                info.ptMinTrackSize.x = min.width.try_into().unwrap();
-                info.ptMinTrackSize.y = min.height.try_into().unwrap();
+            let pressed = matches!(
+                msg,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+            );
+            state.emit(WindowEvent::MouseButton {
+                button,
+                state: if pressed {
+                    ButtonState::Press
+                } else {
+                    ButtonState::Release
+                },
+                position: input::signed_point(lp.0),
+            });
+            if msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP {
+                return LRESULT(1);
             }
-            if let Some(max) = window.platform.size_max {
-                info.ptMaxTrackSize.x = max.width.try_into().unwrap();
-                info.ptMaxTrackSize.y = max.height.try_into().unwrap();
-            }
-            win32::LRESULT::default()
         }
-
-        // Visibility
-        win32::WM_SHOWWINDOW => {
-            let shown = wparam.0 != win32::FALSE.0 as _;
-            C::on_shown(window, &EventShown { shown });
-            win32::LRESULT::default()
-        }
-
-        // Construction and Destruction
-        win32::WM_CREATE => {
-            // I::on_created called from window builder
-            window.platform.handle = hwnd;
-            win32::LRESULT::default()
-        }
-        win32::WM_CLOSE => {
-            let should_close = C::on_close(window, &EventClose {}).unwrap();
-            if should_close {
-                C::on_closing(window, &EventClosing {});
-                window
-                    .platform
-                    .destroy()
-                    .expect("window should be destroyed");
-            }
-            win32::LRESULT::default()
-        }
-
-        win32::WM_DESTROY => {
-            window.platform.handle = Default::default();
-            C::on_closed(window, &EventClosed {});
-            win32::LRESULT::default()
-        }
-        _ => unsafe { win32::DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-unsafe fn get_window<'a, C: WindowCallbacks>(
-    hwnd: win32::HWND,
-) -> Option<&'a mut crate::window::Window<C>> {
-    unsafe {
-        let ptr =
-            win32::GetWindowLongPtrW(hwnd, win32::GWLP_USERDATA) as *mut crate::window::Window<C>;
-        Some(NonNull::new(ptr)?.as_mut())
-    }
-}
-
-//
-//  Helpers
-//
-
-impl Into<win32::WINDOW_STYLE> for &Windowed {
-    fn into(self) -> win32::WINDOW_STYLE {
-        let mut s = win32::WS_SYSMENU
-            | win32::WS_MINIMIZEBOX
-            | win32::WS_CLIPSIBLINGS
-            | win32::WS_CLIPCHILDREN;
-        if self.decorated {
-            s |= win32::WS_CAPTION | win32::WS_BORDER;
-
-            if self.resizable {
-                s |= win32::WS_THICKFRAME | win32::WS_MAXIMIZEBOX;
-            }
-        } else {
-            s |= win32::WS_POPUP;
-        }
-
-        s
-    }
-}
-
-impl Into<win32::WINDOW_EX_STYLE> for &Windowed {
-    fn into(self) -> win32::WINDOW_EX_STYLE {
-        win32::WS_EX_APPWINDOW
-    }
-}
-
-impl TryFrom<(win32::WPARAM, bool)> for VirtualKey {
-    type Error = ();
-
-    fn try_from((value, ext): (win32::WPARAM, bool)) -> Result<Self, Self::Error> {
-        // println!("{:x} {}", value.0, ext);
-        if ext {
-            let key = match win32::VIRTUAL_KEY(value.0 as u16) {
-                win32::VK_SHIFT => VirtualKey::RightShift,
-                win32::VK_CONTROL => VirtualKey::RightControl,
-                win32::VK_MENU => VirtualKey::RightAlt,
-                win32::VK_RETURN => VirtualKey::NumpadEnter,
-                code => unsafe { transmute::<_, VirtualKey>(code.0 as u32) },
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            let p = input::signed_point(lp.0);
+            let mut point = POINT {
+                x: p.x as i32,
+                y: p.y as i32,
             };
-
-            Ok(key)
-        } else {
-            Ok(unsafe { transmute::<_, VirtualKey>(value.0 as u16 as u32) })
+            if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
+                let delta = (wp.0 >> 16) as u16 as i16 as i32;
+                state.emit(WindowEvent::MouseWheel {
+                    delta_x: if msg == WM_MOUSEHWHEEL { delta } else { 0 },
+                    delta_y: if msg == WM_MOUSEWHEEL { delta } else { 0 },
+                    position: Point::new(point.x as isize, point.y as isize),
+                });
+            }
         }
+        WM_MOVE => state.emit(WindowEvent::Moved(input::signed_point(lp.0))),
+        WM_SIZE => state.emit(WindowEvent::Resized(Extent::new(
+            lp.0 as u16 as usize,
+            (lp.0 >> 16) as u16 as usize,
+        ))),
+        WM_SETFOCUS | WM_KILLFOCUS => state.emit(WindowEvent::Focused(msg == WM_SETFOCUS)),
+        WM_SHOWWINDOW => {
+            state.emit(WindowEvent::Shown(wp.0 != 0));
+            return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+        }
+        _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+    LRESULT(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn userdata_owns_state_until_ncdestroy_and_releases_it() -> WinrResult<()> {
+        let state = NativeWindow::create(
+            WindowId(1),
+            Rc::new(Shared::default()),
+            WindowBuilder::new(),
+        )?;
+        assert_eq!(Rc::strong_count(&state), 2, "local + native userdata owner");
+        let weak = Rc::downgrade(&state);
+        state.close()?;
+        assert_eq!(Rc::strong_count(&state), 1, "native owner must be released");
+        drop(state);
+        assert!(weak.upgrade().is_none());
+        Ok(())
     }
 }

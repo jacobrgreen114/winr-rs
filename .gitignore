@@ -2,6 +2,7 @@
 # Ignore hidden files
 .*
 !.gitignore
+!.github/
 
 # Ignore build artifacts
 Cargo.lock

@@ -1,57 +1,40 @@
-// Normal Window
+#[cfg(windows)]
+fn main() -> winr::WinrResult<()> {
+    use winr::Extent;
+    use winr::application::{Event, EventLoop};
+    use winr::window::{WindowBuilder, WindowEvent};
 
-use winr::application::*;
-use winr::window::*;
-use winr::*;
-
-struct MyWindow;
-
-impl WindowCallbacks for MyWindow {
-    type Error = WinrError;
-}
-
-#[derive(Default)]
-struct MyApp {
-    window_main: Option<WindowPtr<MyWindow>>,
-}
-
-impl ApplicationCallbacks for MyApp {
-    type Exit = ();
-    type Error = WinrError;
-
-    fn on_startup(
-        this: &mut ApplicationRunning<Self>,
-        event: &EventStartup,
-    ) -> Result<(), Self::Error> {
-        let mut window = window()
-            .with_callbacks(MyWindow)
-            .with_title("wingman [normal_window]")
-            .with_style(Windowed::default().with_extent(Extent::new(800, 600)))
-            .build(this)?;
-        window.show()?;
-
-        this.window_main = Some(window);
-
-        Ok(())
-    }
-
-    fn on_events_handled(
-        this: &mut ApplicationRunning<Self>,
-        event: &EventHandled,
-    ) -> Result<(), Self::Error> {
-        if let Some(window) = &this.window_main
-            && !window.is_closed()
-        {
-            this.wait_for_events()
-        } else {
-            this.shutdown()
+    let event_loop = EventLoop::new()?;
+    // Application state is ordinary Rust state captured by a generic handler.
+    let mut main_window = None;
+    event_loop.run(move |event_loop, event| {
+        match event {
+            Event::Started => {
+                let window = WindowBuilder::new()
+                    .with_title("winr [normal_window]")
+                    .with_extent(Extent::new(800, 600))
+                    .build(event_loop)?;
+                window.show()?;
+                main_window = Some(window.id());
+            }
+            Event::Window {
+                id,
+                event: WindowEvent::CloseRequested,
+            } if Some(id) == main_window => {
+                if let Some(window) = event_loop.window(id) {
+                    window.close()?;
+                }
+            }
+            Event::Window {
+                event: WindowEvent::Closed,
+                id,
+            } if Some(id) == main_window => event_loop.exit(),
+            _ => {}
         }
-    }
+        Ok(())
+    })
 }
-
-fn main() -> Result<(), WinrError> {
-    application()
-        .with_callbacks(MyApp::default())
-        .build()?
-        .run()
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("The window example requires Windows.");
 }

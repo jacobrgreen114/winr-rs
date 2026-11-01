@@ -1,54 +1,30 @@
 // Copyright (c) 2026 Jacob Green
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::platform::PlatformDisplays;
-use crate::*;
-use std::fmt::Debug;
+//! Snapshots of attached monitors in physical screen coordinates.
+use crate::{Extent, Point, WinrResult};
 
-#[repr(transparent)]
+#[derive(Debug, Clone)]
 pub struct Display {
-    platform: platform::Display,
+    pub(crate) name: String,
+    pub(crate) origin: Point,
+    pub(crate) extent: Extent,
+    pub(crate) primary: bool,
 }
-
 impl Display {
     pub fn name(&self) -> &str {
-        self.platform.name()
+        &self.name
     }
-
     pub fn origin(&self) -> Point {
-        self.platform.origin()
+        self.origin
     }
-
     pub fn extent(&self) -> Extent {
-        self.platform.extent()
+        self.extent
+    }
+    pub fn is_primary(&self) -> bool {
+        self.primary
     }
 }
-
-impl Debug for Display {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct(stringify!(Display))
-            .field("name", &self.name())
-            .field("origin", &self.origin())
-            .field("extent", &self.extent())
-            .finish()
-    }
-}
-
-/// Enumerates displays
-#[repr(transparent)]
-pub struct Displays {
-    platform: platform::Displays,
-}
-
-/// Creates a `Displays` struct.
-pub fn displays() -> WinrResult<Displays> {
-    platform::Displays::new().map(|platform| Displays { platform })
-}
-
-impl Iterator for Displays {
-    type Item = Display;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.platform.next().map(|platform| Display { platform })
-    }
+pub fn displays() -> WinrResult<std::vec::IntoIter<Display>> {
+    crate::platform::windows::display::enumerate().map(Vec::into_iter)
 }

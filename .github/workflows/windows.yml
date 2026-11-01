@@ -1,0 +1,17 @@
+name: Windows
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.92.0 fmt --check
+      - run: cargo +1.92.0 clippy --all-targets -- -D warnings
+      - run: cargo +1.92.0 test --all-targets
+      - run: cargo +1.92.0 test --doc
+      - run: cargo +1.92.0 build --examples
